@@ -74,13 +74,32 @@
 
 /* Keep-alive frame replayed by circular DMA while the CPU is stalled by a flash write:
  * 16 data bits followed by an idle (line low) gap of DSHOT_KEEPALIVE_GAP_US.
- * One DMA slot is one DSHOT bit period, so the gap needs gapUs * dshotHz / bitLength slots. */
+ * One DMA slot is one DSHOT bit period, so a gap of gapUs needs gapUs * dshotHz / bitLength slots. */
 #define DSHOT_KEEPALIVE_GAP_US      40
-#define DSHOT_KEEPALIVE_SLOTS(dshotHz)  (16 + (DSHOT_KEEPALIVE_GAP_US * ((dshotHz) / 1000000) + DSHOT_MOTOR_BITLENGTH - 1) / DSHOT_MOTOR_BITLENGTH)
-/* The buffer is static, so it is sized for the fastest rate: the shorter the bit period,
- * the more slots a 40 us gap needs (40 slots at DSHOT600, 28 at DSHOT300, 22 at DSHOT150).
- * Only DSHOT_KEEPALIVE_SLOTS(actual rate) slots are used at run time. */
+#define DSHOT_KEEPALIVE_US_TO_SLOTS(us, dshotHz) (((us) * ((dshotHz) / 1000000) + DSHOT_MOTOR_BITLENGTH - 1) / DSHOT_MOTOR_BITLENGTH)
+#define DSHOT_KEEPALIVE_SLOTS(dshotHz)  (16 + DSHOT_KEEPALIVE_US_TO_SLOTS(DSHOT_KEEPALIVE_GAP_US, dshotHz))
+#if defined(USE_DSHOT_BIDIR) && defined(STM32H7)
+/* Bidirectional DSHOT keep-alive (H7 only: the TIMx_UP stream needs the DMAMUX). After the
+ * 16 data bits the FC releases the line for the ESC reply, which starts
+ * DSHOT_KEEPALIVE_BIDIR_REPLY_DELAY_US after the frame and carries 21 GCR bits at 5/4 of the
+ * DSHOT bit rate (16.8 bit periods), then keeps it released for the usual gap:
+ * 44 / 54 / 75 slots at DSHOT150 / 300 / 600 (293 / 180 / 125 us per frame). */
+#define USE_DSHOT_BIDIR_KEEPALIVE
+#define DSHOT_KEEPALIVE_BIDIR_REPLY_DELAY_US 30
+#define DSHOT_KEEPALIVE_BIDIR_REPLY_SLOTS    17
+#define DSHOT_KEEPALIVE_BIDIR_SLOTS(dshotHz) (16 + DSHOT_KEEPALIVE_BIDIR_REPLY_SLOTS + DSHOT_KEEPALIVE_US_TO_SLOTS(DSHOT_KEEPALIVE_BIDIR_REPLY_DELAY_US + DSHOT_KEEPALIVE_GAP_US, dshotHz))
+/* CCR is preloaded, so slot i is on the line in bit period i + 1: the outputs stay enabled
+ * through period 16 (last data bit) and are released from period 17 on. */
+#define DSHOT_KEEPALIVE_BIDIR_DRIVEN_SLOTS   17
+#endif
+/* The buffers are static, so they are sized for the fastest rate: the shorter the bit period,
+ * the more slots a gap needs (40 slots at DSHOT600 for the plain keep-alive, 75 for bidir).
+ * Only the slot count of the actual rate is used at run time. */
+#ifdef USE_DSHOT_BIDIR_KEEPALIVE
+#define DSHOT_KEEPALIVE_BUFFER_SIZE     (DSHOT_KEEPALIVE_BIDIR_SLOTS(MOTOR_DSHOT_FASTEST_HZ) > DSHOT_KEEPALIVE_SLOTS(MOTOR_DSHOT_FASTEST_HZ) ? DSHOT_KEEPALIVE_BIDIR_SLOTS(MOTOR_DSHOT_FASTEST_HZ) : DSHOT_KEEPALIVE_SLOTS(MOTOR_DSHOT_FASTEST_HZ))
+#else
 #define DSHOT_KEEPALIVE_BUFFER_SIZE     DSHOT_KEEPALIVE_SLOTS(MOTOR_DSHOT_FASTEST_HZ)
+#endif
 /* Bound for the waits at the keep-alive transitions: two keep-alive cycles at DSHOT150 */
 #define DSHOT_KEEPALIVE_WAIT_TIMEOUT_US 400
 
@@ -102,6 +121,32 @@ typedef void (*pwmWriteFuncPtr)(uint8_t index, uint16_t value);  // function poi
 static DMA_RAM timerDMASafeType_t dshotKeepaliveBuffer[DSHOT_KEEPALIVE_BUFFER_SIZE * 4];
 #else
 static DMA_RAM timerDMASafeType_t dshotKeepaliveBuffer[DSHOT_KEEPALIVE_BUFFER_SIZE];
+#endif
+
+#ifdef USE_DSHOT_BIDIR_KEEPALIVE
+// One extra circular stream per motor timer, fed by TIMx_UP, rewrites CCER every bit period to
+// enable the motor outputs for the frame and release them for the ESC reply. CCER also holds
+// the polarity bits and the other channels, so the pattern is per timer, built from a snapshot.
+typedef struct {
+    TIM_TypeDef *tim;
+    DMA_t dma;                  // stream fed by TIMx_UP
+    uint32_t streamLL;
+    uint32_t request;           // DMAMUX request id of TIMx_UP
+    uint16_t ccDmaSources;      // TIM_DMA_CCx of the motor channels on this timer
+    uint32_t outputMask;        // CCER output enable bit (CCxE or CCxNE) of each motor channel on this timer
+} dshotKeepaliveTimer_t;
+
+typedef enum {
+    DSHOT_KEEPALIVE_UNTRIED = 0,
+    DSHOT_KEEPALIVE_READY,
+    DSHOT_KEEPALIVE_UNAVAILABLE,    // a motor timer has no TIMx_UP request or no stream was free
+} dshotKeepaliveState_e;
+
+static dshotKeepaliveTimer_t dshotKeepaliveTimers[MAX_DMA_TIMERS];
+static uint8_t dshotKeepaliveTimerCount = 0;
+static DMA_RAM uint32_t dshotKeepaliveCcer[MAX_DMA_TIMERS][DSHOT_KEEPALIVE_BUFFER_SIZE];
+static dshotKeepaliveState_e dshotKeepaliveState = DSHOT_KEEPALIVE_UNTRIED;
+static bool dshotKeepaliveActive = false;   // the streams are in keep-alive mode and stop has to undo it
 #endif
 #endif
 
@@ -179,6 +224,10 @@ static bool pwmDshotDecodeTelemetry(void);
 static void pwmDshotSetDirectionOutput(pwmOutputPort_t *port);
 static void pwmDshotSetDirectionInput(pwmOutputPort_t *port);
 static void pwmDshotDmaIrqHandler(DMA_t descriptor);
+#ifdef USE_DSHOT_BIDIR_KEEPALIVE
+static bool dshotBidirKeepaliveStart(void);
+static void dshotBidirKeepaliveStop(void);
+#endif
 #endif
 
 static void pwmOutConfigTimer(pwmOutputPort_t * p, TCH_t * tch, uint32_t hz, uint16_t period, uint16_t value)
@@ -304,12 +353,19 @@ void pwmSetMotorDMACircular(bool circular)
         return;
     }
 
-    // Bidirectional DSHOT uses per-channel DMA with output/input direction
-    // switching: the burst path is never armed (dmaBurstBuffer stays NULL on
-    // USE_DSHOT_DMAR targets) and a port may currently be in the input-capture
-    // direction. Skip the circular keepalive and accept the frame gap during
-    // the flash write, matching Betaflight behaviour.
     if (useDshotTelemetry) {
+#ifdef USE_DSHOT_BIDIR_KEEPALIVE
+        // Padded frame with the outputs released for the ESC reply, see dshotBidirKeepaliveStart()
+        if (circular) {
+            dshotBidirKeepaliveStart();
+        } else {
+            dshotBidirKeepaliveStop();
+        }
+#endif
+        // Elsewhere bidir has no keep-alive: the ports use per-channel DMA with output/input
+        // direction switching (the burst path is never armed on USE_DSHOT_DMAR targets) and a
+        // port may sit in the input-capture direction, so the plain circular replay below does
+        // not apply. The ESC sees a frame gap for the flash write, as in Betaflight.
         return;
     }
 
@@ -446,13 +502,18 @@ static uint32_t dshotDmaSource(const pwmOutputPort_t *port)
 }
 
 #if defined(USE_HAL_DRIVER)
-static uint32_t dshotDmaStream(const pwmOutputPort_t *port)
+static uint32_t dshotDmaStreamByTag(dmaTag_t dmaTag)
 {
     static const uint32_t streams[] = {
         LL_DMA_STREAM_0, LL_DMA_STREAM_1, LL_DMA_STREAM_2, LL_DMA_STREAM_3,
         LL_DMA_STREAM_4, LL_DMA_STREAM_5, LL_DMA_STREAM_6, LL_DMA_STREAM_7
     };
-    return streams[DMATAG_GET_STREAM(port->tch->timHw->dmaTag)];
+    return streams[DMATAG_GET_STREAM(dmaTag)];
+}
+
+static uint32_t dshotDmaStream(const pwmOutputPort_t *port)
+{
+    return dshotDmaStreamByTag(port->tch->timHw->dmaTag);
 }
 
 // The LL driver only exposes per-channel LL_TIM_{En,Dis}ableDMAReq_CC1..CC4;
@@ -870,6 +931,242 @@ static bool NOINLINE pwmDshotDecodeTelemetry(void)
     return true;
 }
 
+#ifdef USE_DSHOT_BIDIR_KEEPALIVE
+/*
+ * Bidirectional DSHOT keep-alive for the flash-write stall (CPU and IRQs stopped, only armed
+ * hardware keeps going). Each motor's CCR stream replays the padded zero-throttle frame in
+ * dshotKeepaliveBuffer in circular mode, and one extra circular stream per motor timer,
+ * triggered by TIMx_UP, rewrites CCER once per bit period from dshotKeepaliveCcer[]: the motor
+ * outputs are enabled for the frame and disabled (CCxE = 0: the pad goes Hi-Z and the pull-up
+ * from dshotConnectOutputs() holds the bidir idle level) while the ESC sends its reply, so the
+ * FC and the ESC never drive the line against each other. The reply is not captured.
+ */
+static uint32_t dshotTimUpDmaRequest(const TIM_TypeDef *tim)
+{
+    if (tim == TIM1) return DMA_REQUEST_TIM1_UP;
+    if (tim == TIM2) return DMA_REQUEST_TIM2_UP;
+    if (tim == TIM3) return DMA_REQUEST_TIM3_UP;
+    if (tim == TIM4) return DMA_REQUEST_TIM4_UP;
+    if (tim == TIM5) return DMA_REQUEST_TIM5_UP;
+    if (tim == TIM8) return DMA_REQUEST_TIM8_UP;
+    if (tim == TIM15) return DMA_REQUEST_TIM15_UP;
+    if (tim == TIM16) return DMA_REQUEST_TIM16_UP;
+    if (tim == TIM17) return DMA_REQUEST_TIM17_UP;
+    return 0;
+}
+
+static uint32_t dshotKeepaliveSlotsUs(uint32_t slots, uint32_t dshotHz)
+{
+    return slots * DSHOT_MOTOR_BITLENGTH * 1000000UL / dshotHz;
+}
+
+// Builds the per-timer table on first use, when every DMA user has claimed its streams
+static bool dshotBidirKeepaliveInit(void)
+{
+    if (dshotKeepaliveState != DSHOT_KEEPALIVE_UNTRIED) {
+        return dshotKeepaliveState == DSHOT_KEEPALIVE_READY;
+    }
+    dshotKeepaliveState = DSHOT_KEEPALIVE_UNAVAILABLE;
+
+    for (int i = 0; i < getMotorCount(); i++) {
+        const pwmOutputPort_t *port = motors[i].pwmPort;
+        if (!port || !port->configured) {
+            continue;
+        }
+
+        TIM_TypeDef *tim = port->tch->timHw->tim;
+        dshotKeepaliveTimer_t *timer = NULL;
+        for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+            if (dshotKeepaliveTimers[t].tim == tim) {
+                timer = &dshotKeepaliveTimers[t];
+                break;
+            }
+        }
+        if (!timer) {
+            if (dshotKeepaliveTimerCount >= MAX_DMA_TIMERS) {
+                return false;
+            }
+            timer = &dshotKeepaliveTimers[dshotKeepaliveTimerCount];
+            timer->tim = tim;
+            timer->request = dshotTimUpDmaRequest(tim);
+            timer->dma = dmaGetFree();
+            if (!timer->request || !timer->dma) {
+                // No keep-alive at all then: the save leaves the line idle-high for its whole
+                // duration, as before this feature (see pwmSetMotorDMACircular())
+                LOG_ERROR(PWM, "Bidir DSHOT keep-alive unavailable: %s for timer %d",
+                          timer->request ? "no free DMA stream" : "no TIMx_UP DMA request", timer2id(tim));
+                return false;
+            }
+            dmaInit(timer->dma, OWNER_MOTOR, 0);
+            timer->streamLL = dshotDmaStreamByTag(timer->dma->tag);
+            timer->ccDmaSources = 0;
+            timer->outputMask = 0;
+            dshotKeepaliveTimerCount++;
+        }
+        timer->ccDmaSources |= dshotDmaSource(port);
+        timer->outputMask |= ((port->tch->timHw->output & TIMER_OUTPUT_N_CHANNEL) ? TIM_CCER_CC1NE : TIM_CCER_CC1E) << (4 * port->tch->timHw->channelIndex);
+    }
+
+    if (dshotKeepaliveTimerCount == 0) {
+        return false;
+    }
+    dshotKeepaliveState = DSHOT_KEEPALIVE_READY;
+    return true;
+}
+
+// Circular memory-to-register stream, no interrupts. Direct mode (no FIFO), so nothing is
+// queued ahead of the peripheral and the stream stops on the next transfer once disabled.
+static void dshotKeepaliveDmaInit(DMA_t dma, uint32_t streamLL, uint32_t request, uint32_t periphAddr, uint32_t memAddr, uint32_t count)
+{
+    DMA_TypeDef *dmaBase = dma->dma;
+    LL_DMA_DisableStream(dmaBase, streamLL);
+    while (LL_DMA_IsEnabledStream(dmaBase, streamLL)) { }
+    LL_DMA_DeInit(dmaBase, streamLL);
+
+    LL_DMA_InitTypeDef init;
+    LL_DMA_StructInit(&init);
+    init.PeriphRequest = request;
+    init.PeriphOrM2MSrcAddress = periphAddr;
+    init.MemoryOrM2MDstAddress = memAddr;
+    init.Direction = LL_DMA_DIRECTION_MEMORY_TO_PERIPH;
+    init.NbData = count;
+    init.PeriphOrM2MSrcIncMode = LL_DMA_PERIPH_NOINCREMENT;
+    init.MemoryOrM2MDstIncMode = LL_DMA_MEMORY_INCREMENT;
+    init.PeriphOrM2MSrcDataSize = LL_DMA_PDATAALIGN_WORD;
+    init.MemoryOrM2MDstDataSize = LL_DMA_MDATAALIGN_WORD;
+    init.Mode = LL_DMA_MODE_CIRCULAR;
+    init.Priority = LL_DMA_PRIORITY_HIGH;
+    init.FIFOMode = LL_DMA_FIFOMODE_DISABLE;
+    init.MemBurst = LL_DMA_MBURST_SINGLE;
+    init.PeriphBurst = LL_DMA_PBURST_SINGLE;
+    LL_DMA_Init(dmaBase, streamLL, &init);
+    LL_DMA_EnableStream(dmaBase, streamLL);
+}
+
+static bool dshotBidirKeepaliveStart(void)
+{
+    // Until the first frame the pins are parked as GPIO at the plain idle level (see
+    // motorConfigDshot()), which the ESC tolerates: nothing to keep alive yet
+    if (dshotPinsParkedLow || !dshotBidirKeepaliveInit()) {
+        return false;
+    }
+
+    const uint32_t dshotHz = getDshotHz(initMotorProtocol);
+    const uint32_t slots = DSHOT_KEEPALIVE_BIDIR_SLOTS(dshotHz);
+    const int motorCount = getMotorCount();
+
+    // A frame started by pwmCompleteMotorUpdate() may be in flight, followed by the ESC reply
+    // captured on the port: let both pass (the DMA IRQs still run here)
+    delayMicroseconds(dshotKeepaliveSlotsUs(DSHOT_DMA_BUFFER_SIZE + slots - 16, dshotHz));
+
+    // Every port back to the output direction with its stream stopped; a capture is dropped
+    for (int i = 0; i < motorCount; i++) {
+        pwmOutputPort_t *port = motors[i].pwmPort;
+        if (port && port->configured) {
+            LL_TIM_DisableDMAReq_CCx(port->tch->timHw->tim, dshotDmaSource(port));
+            pwmDshotSetDirectionOutput(port);
+        }
+    }
+    dshotTelemetryPending = false;
+    // HAL_TIM_PWM_Start() in pwmDshotSetDirectionOutput() only sets CCxE while the HAL channel
+    // state is READY, which it has not been since the first start at init, and the channel
+    // config keeps CCxE as it finds it. The release pattern clears CCxE, so it is set by hand.
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        SET_BIT(dshotKeepaliveTimers[t].tim->CCER, dshotKeepaliveTimers[t].outputMask);
+    }
+
+    // Shared zero-throttle frame; prepareDshotPacket() adds the bidir telemetry bit and checksum.
+    // DMA_RAM is NOLOAD, so the padding has to be cleared explicitly.
+    ZERO_FARRAY(dshotKeepaliveBuffer);
+    loadDmaBufferDshot(dshotKeepaliveBuffer, prepareDshotPacket(0, false));
+
+    // CCER pattern per timer from a snapshot of the register: polarity bits and the other
+    // channels stay as they are, only the motor outputs are switched
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        const dshotKeepaliveTimer_t *timer = &dshotKeepaliveTimers[t];
+        const uint32_t driven = timer->tim->CCER;
+        for (uint32_t i = 0; i < slots; i++) {
+            dshotKeepaliveCcer[t][i] = (i < DSHOT_KEEPALIVE_BIDIR_DRIVEN_SLOTS) ? driven : (driven & ~timer->outputMask);
+        }
+    }
+    __DSB();
+
+    for (int i = 0; i < motorCount; i++) {
+        const pwmOutputPort_t *port = motors[i].pwmPort;
+        if (port && port->configured) {
+            dshotKeepaliveDmaInit(port->tch->dma, dshotDmaStream(port), DMATAG_GET_CHANNEL(port->tch->timHw->dmaTag),
+                                  (uint32_t)port->ccr, (uint32_t)dshotKeepaliveBuffer, slots);
+        }
+    }
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        const dshotKeepaliveTimer_t *timer = &dshotKeepaliveTimers[t];
+        dshotKeepaliveDmaInit(timer->dma, timer->streamLL, timer->request,
+                              (uint32_t)&timer->tim->CCER, (uint32_t)dshotKeepaliveCcer[t], slots);
+    }
+
+    // The streams of a timer must take their first transfer in the same bit period. The update
+    // and the compare match at CCR = 0 both sit at the counter wrap, so park the counter
+    // mid-period and enable all requests of the timer with a single DIER write.
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        const dshotKeepaliveTimer_t *timer = &dshotKeepaliveTimers[t];
+        LL_TIM_SetCounter(timer->tim, DSHOT_MOTOR_BITLENGTH / 2);
+        SET_BIT(timer->tim->DIER, TIM_DIER_UDE | timer->ccDmaSources);
+    }
+
+    dshotKeepaliveActive = true;
+    return true;
+}
+
+static void dshotBidirKeepaliveStop(void)
+{
+    if (!dshotKeepaliveActive) {
+        return;
+    }
+    dshotKeepaliveActive = false;
+
+    const uint32_t dshotHz = getDshotHz(initMotorProtocol);
+    const uint32_t slots = DSHOT_KEEPALIVE_BIDIR_SLOTS(dshotHz);
+    const timeUs_t timeoutUs = 2 * dshotKeepaliveSlotsUs(slots, dshotHz) + DSHOT_KEEPALIVE_GAP_US;
+    const int motorCount = getMotorCount();
+
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        const dshotKeepaliveTimer_t *timer = &dshotKeepaliveTimers[t];
+
+        // Stop right after the outputs have been released for a reply, so the last frame went
+        // out complete: wait for the next frame to start and to end (bounded)
+        const timeUs_t start = micros();
+        while ((timer->tim->CCER & timer->outputMask) == 0 && (micros() - start) < timeoutUs);
+        while ((timer->tim->CCER & timer->outputMask) != 0 && (micros() - start) < timeoutUs);
+
+        LL_DMA_DisableStream(timer->dma->dma, timer->streamLL);
+        for (int i = 0; i < motorCount; i++) {
+            const pwmOutputPort_t *port = motors[i].pwmPort;
+            if (port && port->configured && port->tch->timHw->tim == timer->tim) {
+                LL_DMA_DisableStream(port->tch->dma->dma, dshotDmaStream(port));
+            }
+        }
+        while (LL_DMA_IsEnabledStream(timer->dma->dma, timer->streamLL)) { }
+        CLEAR_BIT(timer->tim->DIER, TIM_DIER_UDE | timer->ccDmaSources);
+    }
+
+    // The ESC answers the last frame now: keep the line released for the reply window
+    delayMicroseconds(dshotKeepaliveSlotsUs(slots - 16, dshotHz));
+
+    // Drive the idle level again (see the note in dshotBidirKeepaliveStart(): the HAL start
+    // in pwmDshotSetDirectionOutput() does not set CCxE), then back to the per-frame streams
+    for (int t = 0; t < dshotKeepaliveTimerCount; t++) {
+        SET_BIT(dshotKeepaliveTimers[t].tim->CCER, dshotKeepaliveTimers[t].outputMask);
+    }
+    for (int i = 0; i < motorCount; i++) {
+        pwmOutputPort_t *port = motors[i].pwmPort;
+        if (port && port->configured) {
+            pwmDshotSetDirectionOutput(port);
+        }
+    }
+    dshotTelemetryPending = false;
+}
+#endif
+
 static pwmOutputPort_t * motorConfigDshot(const timerHardware_t * timerHardware, uint32_t dshotHz, bool enableOutput)
 {
     // Try allocating new port
@@ -1169,7 +1466,7 @@ void pwmMotorPreconfigure(void)
 {
     // Keep track of initial motor protocol
     initMotorProtocol = motorConfig()->motorPwmProtocol;
-#ifdef USE_DSHOT
+#ifdef USE_DSHOT_BIDIR
     useDshotTelemetry = motorConfig()->useDshotTelemetry && getMotorProtocolProperties(initMotorProtocol)->isDSHOT;
 #endif
 

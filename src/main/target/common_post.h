@@ -189,6 +189,13 @@ extern uint8_t __config_end;
     #define USE_RPM_FILTER
 #endif
 
+// Bidirectional DSHOT (eRPM telemetry on the motor line, dshot_bidir_enabled): H7 only.
+// The direction switching is verified there and the EEPROM-save keep-alive needs the
+// DMAMUX for its TIMx_UP stream. Elsewhere the setting is hidden and stays off.
+#if defined(USE_DSHOT) && defined(STM32H7)
+#define USE_DSHOT_BIDIR
+#endif
+
 #ifndef BEEPER_PWM_FREQUENCY
 #define BEEPER_PWM_FREQUENCY    2500
 #endif

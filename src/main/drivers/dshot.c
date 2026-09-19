@@ -26,7 +26,7 @@
 #include "common/utils.h"
 #include "drivers/dshot.h"
 
-#ifdef USE_DSHOT
+#ifdef USE_DSHOT_BIDIR
 
 #include "common/filter.h"
 #include "common/maths.h"
@@ -220,7 +220,7 @@ bool getDshotEscSensorData(escSensorData_t *data, uint8_t motorIndex)
 
 #endif
 
-#ifndef USE_DSHOT
+#ifndef USE_DSHOT_BIDIR
 bool useDshotTelemetry = false;
 dshotTelemetryState_t dshotTelemetryState;
 

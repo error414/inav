@@ -249,11 +249,13 @@ bool escSensorInitialize(void)
 
     escSensorInitData();
 
+#ifdef USE_DSHOT_BIDIR
     if (motorConfig()->useDshotTelemetry && (motorConfig()->motorPwmProtocol >= PWM_TYPE_DSHOT150)) {
         escSensorDshotActive = true;
         ENABLE_STATE(ESC_SENSOR_ENABLED);
         return true;
     }
+#endif
 
     // FUNCTION_ESCSERIAL is shared between SERIALSHOT and ESC_SENSOR telemetry
     // They are mutually exclusive

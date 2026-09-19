@@ -126,3 +126,20 @@ DMA_t dmaGetByRef(const DMA_Stream_TypeDef* ref)
 
     return NULL;
 }
+
+DMA_t dmaGetFree(void)
+{
+    for (unsigned i = 0; i < ARRAYLEN(dmaDescriptors); i++) {
+        if (dmaDescriptors[i].owner != OWNER_FREE) {
+            continue;
+        }
+
+        // A driver may program a fixed stream without claiming it: skip anything that is running
+        dmaEnableClock(&dmaDescriptors[i]);
+        if (!(dmaDescriptors[i].ref->CR & DMA_SxCR_EN)) {
+            return &dmaDescriptors[i];
+        }
+    }
+
+    return NULL;
+}
