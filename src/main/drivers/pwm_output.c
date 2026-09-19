@@ -24,6 +24,7 @@
 
 #if !defined(SITL_BUILD) && !defined(RP2350)
 
+#include "build/atomic.h"
 #include "build/debug.h"
 #include "build/build_config.h"
 
@@ -32,8 +33,8 @@
 #include "common/circular_queue.h"
 
 #include "drivers/io.h"
-#include "drivers/dshot.h"
 #include "drivers/nvic.h"
+#include "drivers/dshot.h"
 #include "drivers/time.h"
 #include "drivers/timer.h"
 #include "drivers/pwm_mapping.h"
@@ -201,7 +202,7 @@ static timeUs_t digitalMotorLastUpdateUs;
 static timeUs_t lastCommandSent = 0;
 static timeUs_t commandPostDelay = 0;
 static bool dshotTelemetryPending = false;
-    
+
 static circularBuffer_t commandsCircularBuffer;
 static uint8_t commandsBuff[DHSOT_COMMAND_QUEUE_SIZE];
 static currentExecutingCommand_t currentExecutingCommand;
@@ -405,8 +406,11 @@ void pwmSetMotorDMACircular(bool circular)
                 if (circular) {
                     impl_pwmBurstDMASetCircular(burstDmaTimer, motors[m].pwmPort->tch, true, dshotKeepaliveBuffer, keepaliveSlots * 4);
                 } else {
-                    dshotWaitForKeepalivePadding(motors[m].pwmPort);
-                    impl_pwmBurstDMASetCircular(burstDmaTimer, motors[m].pwmPort->tch, false, burstDmaTimer->dmaBurstBuffer, DSHOT_DMA_BUFFER_SIZE * 4);
+                    // Atomic so no ISR can delay the stop past the padding into the next frame
+                    ATOMIC_BLOCK(NVIC_PRIO_MAX) {
+                        dshotWaitForKeepalivePadding(motors[m].pwmPort);
+                        impl_pwmBurstDMASetCircular(burstDmaTimer, motors[m].pwmPort->tch, false, burstDmaTimer->dmaBurstBuffer, DSHOT_DMA_BUFFER_SIZE * 4);
+                    }
                 }
                 break;
             }
@@ -419,8 +423,11 @@ void pwmSetMotorDMACircular(bool circular)
             if (circular) {
                 impl_timerPWMSetDMACircular(motors[i].pwmPort->tch, true, dshotKeepaliveBuffer, keepaliveSlots);
             } else {
-                dshotWaitForKeepalivePadding(motors[i].pwmPort);
-                impl_timerPWMSetDMACircular(motors[i].pwmPort->tch, false, motors[i].pwmPort->dmaBuffer, DSHOT_DMA_BUFFER_SIZE);
+                // Atomic so no ISR can delay the stop past the padding into the next frame
+                ATOMIC_BLOCK(NVIC_PRIO_MAX) {
+                    dshotWaitForKeepalivePadding(motors[i].pwmPort);
+                    impl_timerPWMSetDMACircular(motors[i].pwmPort->tch, false, motors[i].pwmPort->dmaBuffer, DSHOT_DMA_BUFFER_SIZE);
+                }
             }
         }
     }
