@@ -190,7 +190,8 @@ extern uint8_t __config_end;
 //  - USE_DSHOT_BIDIR: bidirectional DSHOT (eRPM telemetry on the motor line,
 //    dshot_bidir_enabled). Needs a DMA stream per motor channel for the direction
 //    switching, so it excludes USE_DSHOT_DMAR. H7 only: the direction switching is
-//    verified there. Elsewhere the setting is hidden and stays off.
+//    verified there and the EEPROM-save keep-alive needs the DMAMUX for its TIMx_UP
+//    stream. Elsewhere the setting is hidden and stays off.
 #if defined(USE_DSHOT_DMAR) && !defined(USE_DSHOT)
 #error "USE_DSHOT_DMAR requires USE_DSHOT"
 #endif

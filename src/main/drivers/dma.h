@@ -106,6 +106,10 @@ typedef void (*dmaCallbackHandlerFuncPtr)(DMA_t channelDescriptor);
 
 
 DMA_t dmaGetByRef(const DMA_Stream_TypeDef * ref);
+#if defined(STM32H7)
+// First stream that is neither claimed by dmaInit() nor running; the DMAMUX lets it serve any request
+DMA_t dmaGetFree(void);
+#endif
 
 #elif defined(AT32F43x)
 

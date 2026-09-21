@@ -182,6 +182,9 @@ static void adcInstanceInit(ADCDevice adcDevice)
         return;
     }
 
+    // Claim the stream so that dmaGetFree() does not hand it out
+    dmaInit(dmaGetByRef(adc->DMAy_Streamx), OWNER_ADC, adcDevice);
+
     __HAL_LINKDMA(&adc->ADCHandle, DMA_Handle, adc->DmaHandle);
 
     uint8_t rank = 0;

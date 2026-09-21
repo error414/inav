@@ -826,5 +826,10 @@ void init(void)
 
     statsInit();
 
+#ifdef USE_DSHOT_BIDIR
+    // Last, so the keep-alive DMA streams are picked from what every other driver left free
+    pwmDshotKeepaliveInit();
+#endif
+
     systemState |= SYSTEM_STATE_READY;
 }
