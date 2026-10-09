@@ -83,6 +83,7 @@ extern "C" {
     timeMs_t millis(void) { return fakeMillis; }
     timeUs_t micros(void) { return (timeUs_t)fakeMillis * 1000; }
     bool isEstimatedWindSpeedValid(void) { return windValid; }
+    bool busIsBusy(const busDevice_t *, bool *error) { *error = false; return false; }   // the fake device has no readStart, never reached
 }
 
 class VirtualPitotValidity : public ::testing::Test {
@@ -100,7 +101,8 @@ protected:
     }
 
     bool airspeedValid() {
-        pitotUpdate();   // virtual pitot: sets lastSeenHealthyMs, refreshes validity cache
+        bool newSampleReady;
+        pitotUpdate(&newSampleReady);   // virtual pitot: sets lastSeenHealthyMs, refreshes validity cache
         return pitotGetValidForAirspeed();
     }
 };

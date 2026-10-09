@@ -2,9 +2,8 @@
 
 How a driver starts an I2C transfer without waiting for it, how the platform
 drivers carry it to the end, and what happens when it fails. This document
-covers the bus layer, the barometer and the compass, the first sensors
-converted to it. The other sensor layers (pitot, rangefinder) follow in
-later changes.
+covers the bus layer, the barometer, the compass and the pitot, the first
+sensors converted to it. The rangefinder follows in a later change.
 
 ## Why
 
@@ -163,6 +162,39 @@ Converted so far: QMC5883L and QMC5883P, two transfers per sample. The status
 byte is read first; the six data bytes only when `DRDY` confirms a fresh
 sample, otherwise `read()` reports the miss as before. A sample costs three
 task runs about 1 ms apart, then the task sleeps for the rest of the period.
+
+## Pitot (`sensors/pitotmeter.c`, hooks in `drivers/pitotmeter/pitotmeter.h`)
+
+Same `readStart(pitot, firstStep)` contract as the compass, driven from the
+existing pitot protothread. It is called with `firstStep` set for the first
+transfer of a sample and again after every completed transfer until it
+returns `BUS_READ_STEP_LAST`; `get()` then only parses the static buffers
+and `start()` triggers the next measurement. `start()` may be non-blocking
+as well (`busReadBufStart()`, `busWriteStart()`) and its outcome is not
+waited for: the data read comes `delay` later, and a measurement that was
+never triggered (NACK, or another device held the bus at that moment) shows
+up as a stale or zero reading that `get()` rejects, as a NACKed trigger did
+before. `pitotUpdate()` returns the delay until its next call, 1 ms while a
+transfer is on the bus and the regular 20 ms period once the sample was
+handled, and tells the task whether the airspeed was recomputed, so the
+position estimator is fed only on new samples. Drivers without `readStart`
+keep their blocking `get()`; the MSP, ADC, fake and virtual pitots need no
+change.
+
+Converted so far:
+
+* **MS4525**: `start()` is the one byte measurement request, the sample is
+  two four byte frames read back to back (`NEXT`, `LAST`) and checked
+  against each other as before.
+* **MS5525**: `start()` writes the conversion command, the sample is one
+  three byte ADC read. A zero result means the conversion has not finished
+  or was never started, the same phase is repeated.
+* **DLVR-L10D**: one four byte read, no trigger.
+
+A sample costs two or three task runs about 1 ms apart, then the task sleeps
+for the rest of the period. In `tasks` the PITOT rate alternates between
+50 Hz and 1000 Hz for that reason, the average execution time is what
+matters.
 
 ## Converting a driver
 

@@ -235,6 +235,55 @@ static void performPitotCalibrationCycle(void)
     }
 }
 
+// Set by pitotThread() when a non-blocking read is in progress and the task should come back shortly
+static bool pitotRetrySoon = false;
+
+/*
+ * One step of a non-blocking sample read, see pitotDev_t.readStart. Returns true while the sample is still in
+ * progress (a transfer is on the bus, or waits for the bus to free up), false once this run parsed the sample,
+ * dropped it after a bus error, or found the sensor delay not over yet.
+ */
+static bool pitotReadNonBlocking(void)
+{
+    static bool transferPending = false;        // a transfer started by readStart() is on the bus
+    static bool lastTransferStarted = false;    // the transfer in flight is the last one of the sample
+    bool busError = false;
+
+    if (transferPending && pitot.dev.busDev && busIsBusy(pitot.dev.busDev, &busError) && !busError) {
+        return true;                            // still on the bus
+    }
+
+    if (busError) {
+        // Failed sample, the next attempt comes after the regular delay
+        transferPending = false;
+        lastTransferStarted = false;
+        return false;
+    }
+
+    if (lastTransferStarted) {
+        // The last transfer of the sample is complete, get() only parses it
+        transferPending = false;
+        lastTransferStarted = false;
+        if (pitot.dev.get(&pitot.dev)) {
+            pitot.lastSeenHealthyMs = millis();
+        }
+        pitot.dev.start(&pitot.dev);            // trigger the next measurement, only a parsed sample counts as healthy
+        return false;
+    }
+
+    if (transferPending || (millis() - pitot.lastSeenHealthyMs) >= US2MS(pitot.dev.delay)) {
+        // Next transfer of the sample, or its first one once the sensor delay is over
+        const busReadStepResult_e result = pitot.dev.readStart(&pitot.dev, !transferPending);
+        if (result != BUS_READ_STEP_BUSY) {
+            transferPending = true;
+            lastTransferStarted = (result == BUS_READ_STEP_LAST);
+        }
+        return true;                            // wait for the transfer, or for the bus to free up
+    }
+
+    return false;
+}
+
 STATIC_PROTOTHREAD(pitotThread)
 {
     ptBegin(pitotThread);
@@ -258,7 +307,15 @@ STATIC_PROTOTHREAD(pitotThread)
             }
         }
 
-        if ((millis() - pitot.lastSeenHealthyMs) >= US2MS(pitot.dev.delay)) {
+        if (pitot.dev.readStart) {
+            // Non-blocking driver: the sample arrives over one or more bus transfers spread across runs
+            if (pitotReadNonBlocking()) {
+                pitotRetrySoon = true;          // nothing new this run, keep the last airspeed and look at the bus again shortly
+                ptYield();
+                continue;
+            }
+        }
+        else if ((millis() - pitot.lastSeenHealthyMs) >= US2MS(pitot.dev.delay)) {
             if (pitot.dev.get(&pitot.dev)) {    // read current data
                 pitot.lastSeenHealthyMs = millis();
             }
@@ -366,8 +423,10 @@ static float getVirtualAirspeedEstimate(void)
     return pidProfile()->fixedWingReferenceAirspeed; //float cm/s
 }
 
-void pitotUpdate(void)
+uint32_t pitotUpdate(bool *newSampleReady)
 {
+    pitotRetrySoon = false;
+
 #ifdef USE_SIMULATOR
     if (SIMULATOR_HAS_OPTION(HITL_AIRSPEED)) {
         if (!SIMULATOR_HAS_OPTION(HITL_PITOT_FAILURE)) {
@@ -388,6 +447,11 @@ void pitotUpdate(void)
 
     // Check pitot airspeed validity and cache result for external use
     pitotAirspeedValidCached = isPitotAirspeedValid();
+
+    // A retry run leaves the airspeed untouched, nothing new for the consumers
+    *newSampleReady = !pitotRetrySoon;
+
+    return pitotRetrySoon ? PITOT_READ_RETRY_US : PITOT_UPDATE_PERIOD_US;
 }
 
 /*

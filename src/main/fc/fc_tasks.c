@@ -224,9 +224,12 @@ void taskUpdatePitot(timeUs_t currentTimeUs)
         return;
     }
 
-    pitotUpdate();
+    // A non-blocking read asks to be revisited shortly, otherwise the regular period is restored
+    bool newSampleReady = false;
+    rescheduleTask(TASK_SELF, pitotUpdate(&newSampleReady));
 
-    if ( pitotIsHealthy()) {
+    // Feed the estimator only when the airspeed was recomputed, not on a retry run
+    if (newSampleReady && pitotIsHealthy()) {
         updatePositionEstimator_PitotTopic(currentTimeUs);
     }
 }
@@ -630,7 +633,7 @@ cfTask_t cfTasks[TASK_COUNT] = {
     [TASK_PITOT] = {
         .taskName = "PITOT",
         .taskFunc = taskUpdatePitot,
-        .desiredPeriod = TASK_PERIOD_MS(20),
+        .desiredPeriod = TASK_PERIOD_HZ(PITOT_UPDATE_RATE_HZ),
         .staticPriority = TASK_PRIORITY_MEDIUM,
     },
 #endif
