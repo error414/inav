@@ -61,6 +61,7 @@
 #include "io/beeper.h"
 #include "io/lights.h"
 #include "io/dashboard.h"
+#include "drivers/display_ug2864hsweg01.h"
 #include "io/gps.h"
 #include "io/ledstrip.h"
 #include "io/osd.h"
@@ -279,6 +280,8 @@ void taskDashboardUpdate(timeUs_t currentTimeUs)
 {
     if (feature(FEATURE_DASHBOARD)) {
         dashboardUpdate(currentTimeUs);
+        // The display is drawn into a shadow frame, stream the changed columns quickly while there are any
+        rescheduleTask(TASK_SELF, i2c_OLED_pump() ? OLED_PUMP_RETRY_US : TASK_PERIOD_HZ(10));
     }
 }
 #endif

@@ -3,8 +3,8 @@
 How a driver starts an I2C transfer without waiting for it, how the platform
 drivers carry it to the end, and what happens when it fails. This document
 covers the bus layer, the barometer and the compass, the first sensors
-converted to it. The other sensor layers (pitot, rangefinder) follow in
-later changes.
+converted to it, and the OLED dashboard. The other sensor layers (pitot,
+rangefinder) follow in later changes.
 
 ## Why
 
@@ -163,6 +163,37 @@ Converted so far: QMC5883L and QMC5883P, two transfers per sample. The status
 byte is read first; the six data bytes only when `DRDY` confirms a fresh
 sample, otherwise `read()` reports the miss as before. A sample costs three
 task runs about 1 ms apart, then the task sleeps for the rest of the period.
+
+## OLED dashboard (`drivers/display_ug2864hsweg01.c`)
+
+The dashboard redraws a whole page every 200 ms and clears the panel on a
+page change, about 1 KB of display data each time. Sent byte by byte with
+blocking writes this held the CPU for tens of milliseconds at 100 kHz, long
+enough to starve the motor output.
+
+The driver now keeps a shadow of the panel's GDDRAM (8 pages x 128
+columns, 1 KB of RAM) and the drawing calls only write into it, recording
+the changed column range of every page. `i2c_OLED_pump()` streams the
+changed columns, one non-blocking transfer per call: a 3 byte page/column
+address run, then data runs of up to 15 bytes sent straight from the
+shadow. The dashboard task calls the pump and reschedules itself every
+millisecond while the pump reports work, otherwise at its regular 10 Hz.
+The CMS display port reports the pending work through
+`isTransferInProgress`.
+
+A column rewritten with the same value costs nothing, so a page refresh
+only sends what changed. `i2c_OLED_clear_display_quick()` marks the whole
+frame dirty on purpose: the dashboard uses it to recover a panel that was
+power cycled. A chunk lost to a bus error is marked dirty again, the next
+chunk sets the address afresh and the pump backs off for 200 ms. A start
+refused because another device holds the bus is retried on the next call.
+
+The drawing cursor wraps to the next page after the last column, like the
+horizontal addressing mode the dashboard's armed bitmap was written for;
+the panel itself stays in page addressing mode, which the SH1106 needs.
+
+Only the initialisation is blocking: the command table, and the first
+clear that blanks the panel while it is switched off.
 
 ## Converting a driver
 
