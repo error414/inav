@@ -19,6 +19,32 @@
 
 #pragma once
 
+// Cloud builds start with these optional features off and enable them through
+// CLOUD_USE_* flags. A separate name is needed because a plain -DUSE_* cannot be
+// told apart from the default set by common.h or target.h. Kept before any
+// derivation below so nothing is derived from a feature that gets removed.
+#ifdef CLOUD_BUILD
+#ifndef CLOUD_USE_LED_STRIP
+#undef USE_LED_STRIP
+#endif
+#ifndef CLOUD_USE_ADSB
+#undef USE_ADSB
+#endif
+#ifndef CLOUD_USE_PROGRAMMING_FRAMEWORK
+#undef USE_PROGRAMMING_FRAMEWORK
+#endif
+#ifndef CLOUD_USE_FW_AUTOLAND
+#undef USE_FW_AUTOLAND
+#endif
+#ifndef CLOUD_USE_SERVO_SBUS
+#undef USE_SERVO_SBUS
+#endif
+#ifdef CLOUD_NAV_MAX_WAYPOINTS
+#undef NAV_MAX_WAYPOINTS
+#define NAV_MAX_WAYPOINTS CLOUD_NAV_MAX_WAYPOINTS
+#endif
+#endif
+
 // MSP-over-MAVLink is independently removable from MAVLink targets that cannot
 // afford its reply buffer. Define DISABLE_MAVLINK_MSP_TUNNEL in a target to
 // retain normal MAVLink without the tunnel RAM/code cost.
