@@ -178,9 +178,22 @@ extern uint8_t __config_end;
 
 // Terrain keeps a sizeable grid cache in RAM, so restrict it to MCUs with enough of it.
 // MCU_RAM_SIZE is in KiB, defined per MCU next to MCU_FLASH_SIZE in cmake/.
-#if defined(USE_BARO) && defined(USE_SDCARD) && !defined(USE_TERRAIN) && (MCU_RAM_SIZE > 256)
+// Cloud builds skip the RAM threshold: whoever asks for terrain on a board with
+// an SD card gets it and picks the cache size themselves.
+#if defined(CLOUD_BUILD)
+#undef USE_TERRAIN
+#if defined(CLOUD_USE_TERRAIN) && defined(USE_BARO) && defined(USE_SDCARD)
 #define USE_TERRAIN
+#endif
+#ifdef CLOUD_TERRAIN_GRID_BLOCK_CACHE_SIZE
+#undef TERRAIN_GRID_BLOCK_CACHE_SIZE
+#define TERRAIN_GRID_BLOCK_CACHE_SIZE CLOUD_TERRAIN_GRID_BLOCK_CACHE_SIZE
+#endif
+#elif defined(USE_BARO) && defined(USE_SDCARD) && !defined(USE_TERRAIN) && (MCU_RAM_SIZE > 256)
+#define USE_TERRAIN
+#endif
 
+#if defined(USE_TERRAIN) && !defined(TERRAIN_GRID_BLOCK_CACHE_SIZE)
 // number of grid blocks held in the RAM cache; each entry is a gridCache_t
 // wrapping one packed gridBlock_t (~1.1 KB), no longer the old 2048-byte block
 #if (MCU_RAM_SIZE >= 512)
