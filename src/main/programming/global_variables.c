@@ -67,4 +67,17 @@ void gvInit(void) {
     }
 }
 
+#else
+
+#include <stdint.h>
+#include "common/utils.h"
+#include "programming/global_variables.h"
+
+// OSD custom elements read global variables unconditionally, like they read
+// logicConditionGetValue(), so keep the getter available without the framework.
+int32_t gvGet(uint8_t index) {
+    UNUSED(index);
+    return 0;
+}
+
 #endif
