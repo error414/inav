@@ -98,6 +98,10 @@ extern uint8_t __config_end;
 #if defined(USE_MAG)
 #define USE_MAG_MSP
 
+#if defined(USE_DRONECAN)
+#define USE_MAG_DRONECAN
+#endif
+
 #if defined(USE_MAG_ALL)
 
 #define USE_MAG_HMC5883

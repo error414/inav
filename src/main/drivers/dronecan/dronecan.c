@@ -37,6 +37,11 @@
 #include "sensors/battery_sensor_dronecan.h"
 #include "sensors/diagnostics.h"
 
+#if defined(USE_MAG_DRONECAN)
+#include "drivers/compass/compass_dronecan.h"
+#include "sensors/compass.h"
+#endif
+
 /* Private variables ---------------------------------------------------------*/
 
 CanardInstance canard; /* non-static: dronecan_async.c needs extern access */
@@ -424,6 +429,14 @@ static bool shouldAcceptTransfer(const CanardInstance *ins,
         case UAVCAN_EQUIPMENT_POWER_BATTERYINFO_ID:
             *out_data_type_signature = UAVCAN_EQUIPMENT_POWER_BATTERYINFO_SIGNATURE;
             return true;
+#if defined(USE_MAG_DRONECAN)
+        case UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID:
+            *out_data_type_signature = UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_SIGNATURE;
+            return true;
+        case UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID:
+            *out_data_type_signature = UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_SIGNATURE;
+            return true;
+#endif
         }
     }
     return false;
@@ -488,6 +501,33 @@ static void handle_BatteryInfo(CanardInstance *ins, CanardRxTransfer *transfer) 
 	}
     dronecanBatterySensorReceiveInfo(&batteryInfo);
 }
+
+#if defined(USE_MAG_DRONECAN)
+// Legacy message without sensor_id. ArduPilot treats it as sensor 0 and so do we.
+static void handle_MagneticFieldStrength(CanardInstance *ins, CanardRxTransfer *transfer) {
+    UNUSED(ins);
+    if (compassConfig()->mag_hardware != MAG_DRONECAN) return;
+    struct uavcan_equipment_ahrs_MagneticFieldStrength magneticFieldStrength;
+
+    if (uavcan_equipment_ahrs_MagneticFieldStrength_decode(transfer, &magneticFieldStrength)) {
+        LOG_WARNING(CAN, "MagneticFieldStrength decode failed");
+        return;
+    }
+    dronecanMagReceiveField(transfer->source_node_id, 0, magneticFieldStrength.magnetic_field_ga);
+}
+
+static void handle_MagneticFieldStrength2(CanardInstance *ins, CanardRxTransfer *transfer) {
+    UNUSED(ins);
+    if (compassConfig()->mag_hardware != MAG_DRONECAN) return;
+    struct uavcan_equipment_ahrs_MagneticFieldStrength2 magneticFieldStrength2;
+
+    if (uavcan_equipment_ahrs_MagneticFieldStrength2_decode(transfer, &magneticFieldStrength2)) {
+        LOG_WARNING(CAN, "MagneticFieldStrength2 decode failed");
+        return;
+    }
+    dronecanMagReceiveField(transfer->source_node_id, magneticFieldStrength2.sensor_id, magneticFieldStrength2.magnetic_field_ga);
+}
+#endif
 
 /*
   handle a GetNodeInfo request
@@ -595,6 +635,16 @@ static void onTransferReceived(CanardInstance *ins, CanardRxTransfer *transfer) 
             case UAVCAN_EQUIPMENT_POWER_BATTERYINFO_ID:
                 handle_BatteryInfo(ins, transfer);
                 break;
+
+#if defined(USE_MAG_DRONECAN)
+            case UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID:
+                handle_MagneticFieldStrength(ins, transfer);
+                break;
+
+            case UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID:
+                handle_MagneticFieldStrength2(ins, transfer);
+                break;
+#endif
         }
 	}
 }

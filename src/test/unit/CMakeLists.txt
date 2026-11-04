@@ -24,6 +24,12 @@ set_property(SOURCE battery_ina226_unittest.cc PROPERTY definitions USE_INA226 U
 
 set_property(SOURCE bitarray_unittest.cc PROPERTY depends "common/bitarray.c")
 
+set_property(SOURCE compass_dronecan_unittest.cc PROPERTY depends
+    "common/maths.c" "drivers/compass/compass_dronecan.c" "sensors/boardalignment.c")
+# USE_MAG_DRONECAN is normally derived in target/common_post.h, which the unit
+# test platform.h does not include, so it is defined here directly.
+set_property(SOURCE compass_dronecan_unittest.cc PROPERTY definitions USE_MAG_DRONECAN)
+
 set_property(SOURCE compass_orientation_unittest.cc PROPERTY depends
     "common/maths.c" "sensors/compass_orientation.c")
 set_property(SOURCE compass_orientation_unittest.cc PROPERTY definitions USE_MAG USE_MAG_CALIBRATION_ORIENTATION)
@@ -118,11 +124,13 @@ set_property(SOURCE dronecan_application_unittest.cc PROPERTY extra_sources
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.param.Value.c"
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.param.NumericValue.c"
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.param.Empty.c"
-    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.dynamic_node_id.Allocation.c")
+    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.dynamic_node_id.Allocation.c"
+    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.equipment.ahrs.MagneticFieldStrength.c"
+    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.equipment.ahrs.MagneticFieldStrength2.c")
 set_property(SOURCE dronecan_application_unittest.cc PROPERTY extra_includes
     "../../lib/main/Dronecan/dsdlc_generated/include")
 set_property(SOURCE dronecan_application_unittest.cc PROPERTY definitions
-    USE_DRONECAN CANARD_ENABLE_TAO_OPTION=0
+    USE_DRONECAN USE_MAG_DRONECAN CANARD_ENABLE_TAO_OPTION=0
     FC_VERSION_MAJOR=10 FC_VERSION_MINOR=0 FC_VERSION_PATCH_LEVEL=0)
 
 # PARAM_GETSET MSP payload parser - extracted from fc_msp.c's giant command

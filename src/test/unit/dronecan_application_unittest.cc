@@ -39,6 +39,10 @@ extern "C" {
    available when we define stub globals below. */
 #include "io/gps.h"
 #include "sensors/battery_sensor_dronecan.h"
+#include "sensors/compass.h"
+#include "drivers/compass/compass_dronecan.h"
+#include "uavcan.equipment.ahrs.MagneticFieldStrength.h"
+#include "uavcan.equipment.ahrs.MagneticFieldStrength2.h"
 #include "fc/runtime_config.h"
 #include "sensors/diagnostics.h"
 #include "build/version.h"
@@ -99,6 +103,23 @@ void dronecanGPSReceiveGNSSFix(const struct uavcan_equipment_gnss_Fix *p) { (voi
 void dronecanGPSReceiveGNSSFix2(const struct uavcan_equipment_gnss_Fix2 *p) { (void)p; }
 void dronecanGPSReceiveGNSSAuxiliary(const struct uavcan_equipment_gnss_Auxiliary *p) { (void)p; }
 void dronecanBatterySensorReceiveInfo(struct uavcan_equipment_power_BatteryInfo *p) { (void)p; }
+
+/* Compass config — mag_hardware gates the MagneticFieldStrength* handlers */
+compassConfig_t compassConfig_System;
+compassConfig_t compassConfig_Copy;
+
+/* Recording stub for the DroneCAN compass driver */
+static int     mag_receive_calls = 0;
+static uint8_t mag_receive_node_id = 0;
+static uint8_t mag_receive_sensor_id = 0;
+static float   mag_receive_field[3];
+void dronecanMagReceiveField(uint8_t nodeId, uint8_t sensorId, const float fieldGauss[3])
+{
+    mag_receive_calls++;
+    mag_receive_node_id = nodeId;
+    mag_receive_sensor_id = sensorId;
+    memcpy(mag_receive_field, fieldGauss, sizeof(mag_receive_field));
+}
 
 /* STM32 CAN driver stubs */
 int16_t canardSTM32CAN1_Init(uint32_t b) { (void)b; return CANARD_OK; }
@@ -995,4 +1016,120 @@ TEST_F(DroneCANDispatchTest, DronecanUpdate_TimeoutCheckedAfterRxDrain_ResponseN
     const dronecanParamResult_t *r = &dronecanAsyncSlot.result.param;
     EXPECT_EQ(r->type,      (uint8_t)DRONECAN_PARAM_TYPE_INT);
     EXPECT_EQ(r->value_int, 7);
+}
+
+/* =========================================================================
+ * Magnetometer broadcast tests
+ * ========================================================================= */
+
+TEST(DroneCANShouldAcceptTransfer, AcceptsMagneticFieldStrengthBroadcast)
+{
+    uint64_t signature = 0;
+    bool accept = shouldAcceptTransfer(
+            nullptr, &signature,
+            UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID,
+            CanardTransferTypeBroadcast,
+            42);
+
+    EXPECT_TRUE(accept);
+    EXPECT_EQ(signature, UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_SIGNATURE);
+}
+
+TEST(DroneCANShouldAcceptTransfer, AcceptsMagneticFieldStrength2Broadcast)
+{
+    uint64_t signature = 0;
+    bool accept = shouldAcceptTransfer(
+            nullptr, &signature,
+            UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID,
+            CanardTransferTypeBroadcast,
+            42);
+
+    EXPECT_TRUE(accept);
+    EXPECT_EQ(signature, UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_SIGNATURE);
+}
+
+class DroneCANMagDispatchTest : public DroneCANDispatchTest {
+protected:
+    void SetUp() override {
+        DroneCANDispatchTest::SetUp();
+        mag_receive_calls = 0;
+        mag_receive_node_id = 0;
+        mag_receive_sensor_id = 0;
+        memset(mag_receive_field, 0, sizeof(mag_receive_field));
+        memset(&compassConfig_System, 0, sizeof(compassConfig_System));
+        compassConfig_System.mag_hardware = MAG_DRONECAN;
+    }
+
+    CanardRxTransfer makeBroadcast(uint16_t dataTypeId, uint8_t sourceNodeId, uint32_t encodedLen) {
+        CanardRxTransfer xfer;
+        memset(&xfer, 0, sizeof(xfer));
+        xfer.transfer_type  = CanardTransferTypeBroadcast;
+        xfer.data_type_id   = dataTypeId;
+        xfer.source_node_id = sourceNodeId;
+        xfer.payload_head   = buf;
+        xfer.payload_len    = (uint16_t)encodedLen;
+        return xfer;
+    }
+};
+
+/* float16 on the wire: ~3 significant digits */
+static const float MAG_FIELD_TOLERANCE = 1e-3f;
+
+TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength2_ForwardedWithNodeAndSensorId)
+{
+    struct uavcan_equipment_ahrs_MagneticFieldStrength2 msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.sensor_id = 1;
+    msg.magnetic_field_ga[0] = 0.25f;
+    msg.magnetic_field_ga[1] = -0.5f;
+    msg.magnetic_field_ga[2] = 1.0f;
+
+    uint32_t encoded_len = uavcan_equipment_ahrs_MagneticFieldStrength2_encode(&msg, buf);
+    CanardRxTransfer xfer = makeBroadcast(UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID, 7, encoded_len);
+
+    onTransferReceived(&ins, &xfer);
+
+    ASSERT_EQ(mag_receive_calls, 1);
+    EXPECT_EQ(mag_receive_node_id, 7u);
+    EXPECT_EQ(mag_receive_sensor_id, 1u);
+    EXPECT_NEAR(mag_receive_field[0], 0.25f, MAG_FIELD_TOLERANCE);
+    EXPECT_NEAR(mag_receive_field[1], -0.5f, MAG_FIELD_TOLERANCE);
+    EXPECT_NEAR(mag_receive_field[2], 1.0f, MAG_FIELD_TOLERANCE);
+}
+
+TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength_LegacyMessageUsesSensorZero)
+{
+    struct uavcan_equipment_ahrs_MagneticFieldStrength msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.magnetic_field_ga[0] = 0.125f;
+    msg.magnetic_field_ga[1] = 0.0f;
+    msg.magnetic_field_ga[2] = -0.375f;
+
+    uint32_t encoded_len = uavcan_equipment_ahrs_MagneticFieldStrength_encode(&msg, buf);
+    CanardRxTransfer xfer = makeBroadcast(UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID, 9, encoded_len);
+
+    onTransferReceived(&ins, &xfer);
+
+    ASSERT_EQ(mag_receive_calls, 1);
+    EXPECT_EQ(mag_receive_node_id, 9u);
+    EXPECT_EQ(mag_receive_sensor_id, 0u);
+    EXPECT_NEAR(mag_receive_field[0], 0.125f, MAG_FIELD_TOLERANCE);
+    EXPECT_NEAR(mag_receive_field[1], 0.0f, MAG_FIELD_TOLERANCE);
+    EXPECT_NEAR(mag_receive_field[2], -0.375f, MAG_FIELD_TOLERANCE);
+}
+
+TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength2_IgnoredUnlessMagHardwareIsDronecan)
+{
+    compassConfig_System.mag_hardware = MAG_AUTODETECT;
+
+    struct uavcan_equipment_ahrs_MagneticFieldStrength2 msg;
+    memset(&msg, 0, sizeof(msg));
+    msg.magnetic_field_ga[2] = 1.0f;
+
+    uint32_t encoded_len = uavcan_equipment_ahrs_MagneticFieldStrength2_encode(&msg, buf);
+    CanardRxTransfer xfer = makeBroadcast(UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID, 7, encoded_len);
+
+    onTransferReceived(&ins, &xfer);
+
+    EXPECT_EQ(mag_receive_calls, 0);
 }
