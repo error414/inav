@@ -125,8 +125,7 @@ set_property(SOURCE dronecan_application_unittest.cc PROPERTY extra_sources
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.param.NumericValue.c"
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.param.Empty.c"
     "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.protocol.dynamic_node_id.Allocation.c"
-    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.equipment.ahrs.MagneticFieldStrength.c"
-    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.equipment.ahrs.MagneticFieldStrength2.c")
+    "../../lib/main/Dronecan/dsdlc_generated/src/uavcan.equipment.ahrs.MagneticFieldStrength.c")
 set_property(SOURCE dronecan_application_unittest.cc PROPERTY extra_includes
     "../../lib/main/Dronecan/dsdlc_generated/include")
 set_property(SOURCE dronecan_application_unittest.cc PROPERTY definitions

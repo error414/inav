@@ -31,6 +31,6 @@ struct magDev_s;
 
 bool dronecanMagDetect(struct magDev_s *mag);
 
-// Called from the DroneCAN RX path for every MagneticFieldStrength / MagneticFieldStrength2
-// broadcast. fieldGauss is the DSDL magnetic_field_ga vector in the publishing node's body frame.
-void dronecanMagReceiveField(uint8_t nodeId, uint8_t sensorId, const float fieldGauss[3]);
+// Called from the DroneCAN RX path for every MagneticFieldStrength broadcast.
+// fieldGauss is the DSDL magnetic_field_ga vector in the publishing node's body frame.
+void dronecanMagReceiveField(uint8_t nodeId, const float fieldGauss[3]);

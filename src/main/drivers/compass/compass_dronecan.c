@@ -46,20 +46,14 @@
 #define DRONECAN_MAG_TIMEOUT_MS     250     // Less than 4Hz updates is considered a failure
 #define DRONECAN_MAG_GAUSS_TO_RAW   1000.0f // Raw units are milligauss, the same scale ArduPilot uses
 
-static float dronecanMagData[XYZ_AXIS_COUNT];
+static int16_t dronecanMagData[XYZ_AXIS_COUNT];
 static timeMs_t dronecanMagLastUpdateMs;
 
-// The first (node, sensor) pair heard owns the compass until it goes silent for
-// DRONECAN_MAG_TIMEOUT_MS. Without this, two magnetometer nodes on one bus would
-// interleave samples taken in two different frames.
-static bool dronecanMagSourceLocked;
+// The first node heard owns the compass until reboot. Calibration and alignment
+// belong to that one sensor, so when it goes silent the compass has to turn
+// unhealthy instead of silently continuing on another magnetometer.
+// 0 is the anonymous node ID, which no compass can publish from: nothing locked yet.
 static uint8_t dronecanMagNodeId;
-static uint8_t dronecanMagSensorId;
-
-static bool dronecanMagIsStale(void)
-{
-    return (millis() - dronecanMagLastUpdateMs) > DRONECAN_MAG_TIMEOUT_MS;
-}
 
 static bool dronecanMagInit(magDev_t *magDev)
 {
@@ -68,45 +62,49 @@ static bool dronecanMagInit(magDev_t *magDev)
     dronecanMagData[Y] = 0;
     dronecanMagData[Z] = 0;
     dronecanMagLastUpdateMs = 0;
-    dronecanMagSourceLocked = false;
+    dronecanMagNodeId = 0;
     return true;
 }
 
-void dronecanMagReceiveField(uint8_t nodeId, uint8_t sensorId, const float fieldGauss[3])
+void dronecanMagReceiveField(uint8_t nodeId, const float fieldGauss[3])
 {
-    // float16 fields on the wire can carry NaN for "not populated"
-    if (isnan(fieldGauss[X]) || isnan(fieldGauss[Y]) || isnan(fieldGauss[Z])) {
+    // float16 fields on the wire can carry NaN for "not populated"; infinity is no measurement either
+    if (nodeId == 0 || !isfinite(fieldGauss[X]) || !isfinite(fieldGauss[Y]) || !isfinite(fieldGauss[Z])) {
         return;
     }
 
-    if (!dronecanMagSourceLocked || dronecanMagIsStale()) {
-        dronecanMagSourceLocked = true;
+    if (dronecanMagNodeId == 0) {
         dronecanMagNodeId = nodeId;
-        dronecanMagSensorId = sensorId;
-    } else if (nodeId != dronecanMagNodeId || sensorId != dronecanMagSensorId) {
+    } else if (nodeId != dronecanMagNodeId) {
         return;
     }
 
+    float field[XYZ_AXIS_COUNT];
     for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
-        dronecanMagData[axis] = constrainf(fieldGauss[axis] * DRONECAN_MAG_GAUSS_TO_RAW, INT16_MIN, INT16_MAX);
+        // Symmetric range: the pre-rotation below negates an axis and +32768 does not fit in int16_t
+        field[axis] = constrainf(fieldGauss[axis] * DRONECAN_MAG_GAUSS_TO_RAW, -INT16_MAX, INT16_MAX);
     }
 
     // AP_Periph publishes the field in the ArduPilot body frame, the same frame its
     // MSP compass messages use, so apply the same pre-rotation as the MSP mag driver
-    applySensorAlignment(dronecanMagData, dronecanMagData, CW90_DEG_FLIP);
+    applySensorAlignment(field, field, CW90_DEG_FLIP);
+
+    for (int axis = 0; axis < XYZ_AXIS_COUNT; axis++) {
+        dronecanMagData[axis] = lrintf(field[axis]);
+    }
 
     dronecanMagLastUpdateMs = millis();
 }
 
 static bool dronecanMagRead(magDev_t *magDev)
 {
-    if (dronecanMagIsStale()) {
+    if ((millis() - dronecanMagLastUpdateMs) > DRONECAN_MAG_TIMEOUT_MS) {
         return false;
     }
 
-    magDev->magADCRaw[X] = lrintf(dronecanMagData[X]);
-    magDev->magADCRaw[Y] = lrintf(dronecanMagData[Y]);
-    magDev->magADCRaw[Z] = lrintf(dronecanMagData[Z]);
+    magDev->magADCRaw[X] = dronecanMagData[X];
+    magDev->magADCRaw[Y] = dronecanMagData[Y];
+    magDev->magADCRaw[Z] = dronecanMagData[Z];
 
     return true;
 }

@@ -42,7 +42,6 @@ extern "C" {
 #include "sensors/compass.h"
 #include "drivers/compass/compass_dronecan.h"
 #include "uavcan.equipment.ahrs.MagneticFieldStrength.h"
-#include "uavcan.equipment.ahrs.MagneticFieldStrength2.h"
 #include "fc/runtime_config.h"
 #include "sensors/diagnostics.h"
 #include "build/version.h"
@@ -104,20 +103,18 @@ void dronecanGPSReceiveGNSSFix2(const struct uavcan_equipment_gnss_Fix2 *p) { (v
 void dronecanGPSReceiveGNSSAuxiliary(const struct uavcan_equipment_gnss_Auxiliary *p) { (void)p; }
 void dronecanBatterySensorReceiveInfo(struct uavcan_equipment_power_BatteryInfo *p) { (void)p; }
 
-/* Compass config — mag_hardware gates the MagneticFieldStrength* handlers */
+/* Compass config — mag_hardware gates the MagneticFieldStrength* messages in shouldAcceptTransfer */
 compassConfig_t compassConfig_System;
 compassConfig_t compassConfig_Copy;
 
 /* Recording stub for the DroneCAN compass driver */
 static int     mag_receive_calls = 0;
 static uint8_t mag_receive_node_id = 0;
-static uint8_t mag_receive_sensor_id = 0;
 static float   mag_receive_field[3];
-void dronecanMagReceiveField(uint8_t nodeId, uint8_t sensorId, const float fieldGauss[3])
+void dronecanMagReceiveField(uint8_t nodeId, const float fieldGauss[3])
 {
     mag_receive_calls++;
     mag_receive_node_id = nodeId;
-    mag_receive_sensor_id = sensorId;
     memcpy(mag_receive_field, fieldGauss, sizeof(mag_receive_field));
 }
 
@@ -1024,6 +1021,7 @@ TEST_F(DroneCANDispatchTest, DronecanUpdate_TimeoutCheckedAfterRxDrain_ResponseN
 
 TEST(DroneCANShouldAcceptTransfer, AcceptsMagneticFieldStrengthBroadcast)
 {
+    compassConfig_System.mag_hardware = MAG_DRONECAN;
     uint64_t signature = 0;
     bool accept = shouldAcceptTransfer(
             nullptr, &signature,
@@ -1035,17 +1033,17 @@ TEST(DroneCANShouldAcceptTransfer, AcceptsMagneticFieldStrengthBroadcast)
     EXPECT_EQ(signature, UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_SIGNATURE);
 }
 
-TEST(DroneCANShouldAcceptTransfer, AcceptsMagneticFieldStrength2Broadcast)
+/* Not handled: no known compass node sends it */
+TEST(DroneCANShouldAcceptTransfer, RejectsMagneticFieldStrength2Broadcast)
 {
+    compassConfig_System.mag_hardware = MAG_DRONECAN;
     uint64_t signature = 0;
-    bool accept = shouldAcceptTransfer(
+
+    EXPECT_FALSE(shouldAcceptTransfer(
             nullptr, &signature,
             UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID,
             CanardTransferTypeBroadcast,
-            42);
-
-    EXPECT_TRUE(accept);
-    EXPECT_EQ(signature, UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_SIGNATURE);
+            42));
 }
 
 class DroneCANMagDispatchTest : public DroneCANDispatchTest {
@@ -1054,7 +1052,6 @@ protected:
         DroneCANDispatchTest::SetUp();
         mag_receive_calls = 0;
         mag_receive_node_id = 0;
-        mag_receive_sensor_id = 0;
         memset(mag_receive_field, 0, sizeof(mag_receive_field));
         memset(&compassConfig_System, 0, sizeof(compassConfig_System));
         compassConfig_System.mag_hardware = MAG_DRONECAN;
@@ -1075,29 +1072,7 @@ protected:
 /* float16 on the wire: ~3 significant digits */
 static const float MAG_FIELD_TOLERANCE = 1e-3f;
 
-TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength2_ForwardedWithNodeAndSensorId)
-{
-    struct uavcan_equipment_ahrs_MagneticFieldStrength2 msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.sensor_id = 1;
-    msg.magnetic_field_ga[0] = 0.25f;
-    msg.magnetic_field_ga[1] = -0.5f;
-    msg.magnetic_field_ga[2] = 1.0f;
-
-    uint32_t encoded_len = uavcan_equipment_ahrs_MagneticFieldStrength2_encode(&msg, buf);
-    CanardRxTransfer xfer = makeBroadcast(UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID, 7, encoded_len);
-
-    onTransferReceived(&ins, &xfer);
-
-    ASSERT_EQ(mag_receive_calls, 1);
-    EXPECT_EQ(mag_receive_node_id, 7u);
-    EXPECT_EQ(mag_receive_sensor_id, 1u);
-    EXPECT_NEAR(mag_receive_field[0], 0.25f, MAG_FIELD_TOLERANCE);
-    EXPECT_NEAR(mag_receive_field[1], -0.5f, MAG_FIELD_TOLERANCE);
-    EXPECT_NEAR(mag_receive_field[2], 1.0f, MAG_FIELD_TOLERANCE);
-}
-
-TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength_LegacyMessageUsesSensorZero)
+TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength_ForwardedWithNodeId)
 {
     struct uavcan_equipment_ahrs_MagneticFieldStrength msg;
     memset(&msg, 0, sizeof(msg));
@@ -1112,24 +1087,20 @@ TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength_LegacyMessageUsesSensorZer
 
     ASSERT_EQ(mag_receive_calls, 1);
     EXPECT_EQ(mag_receive_node_id, 9u);
-    EXPECT_EQ(mag_receive_sensor_id, 0u);
     EXPECT_NEAR(mag_receive_field[0], 0.125f, MAG_FIELD_TOLERANCE);
     EXPECT_NEAR(mag_receive_field[1], 0.0f, MAG_FIELD_TOLERANCE);
     EXPECT_NEAR(mag_receive_field[2], -0.375f, MAG_FIELD_TOLERANCE);
 }
 
-TEST_F(DroneCANMagDispatchTest, MagneticFieldStrength2_IgnoredUnlessMagHardwareIsDronecan)
+/* Rejected before reassembly, so an unused compass node takes no canard pool memory */
+TEST(DroneCANShouldAcceptTransfer, RejectsMagneticFieldStrengthUnlessMagHardwareIsDronecan)
 {
     compassConfig_System.mag_hardware = MAG_AUTODETECT;
+    uint64_t signature = 0;
 
-    struct uavcan_equipment_ahrs_MagneticFieldStrength2 msg;
-    memset(&msg, 0, sizeof(msg));
-    msg.magnetic_field_ga[2] = 1.0f;
-
-    uint32_t encoded_len = uavcan_equipment_ahrs_MagneticFieldStrength2_encode(&msg, buf);
-    CanardRxTransfer xfer = makeBroadcast(UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID, 7, encoded_len);
-
-    onTransferReceived(&ins, &xfer);
-
-    EXPECT_EQ(mag_receive_calls, 0);
+    EXPECT_FALSE(shouldAcceptTransfer(
+            nullptr, &signature,
+            UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID,
+            CanardTransferTypeBroadcast,
+            42));
 }

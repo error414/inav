@@ -115,8 +115,7 @@ CAN Bus ──[CAN interrupt]──> canardSTM32Receive() ──> shouldAcceptTr
 | `UAVCAN_EQUIPMENT_GNSS_AUXILIARY_ID` | `handle_GNSSAuxiliary()` | GPS Auxiliary | Broadcast | 5-10 Hz | Satellite count, HDOP |
 | `UAVCAN_EQUIPMENT_GNSS_RTCMSTREAM_ID` | `handle_GNSSRCTMStream()` | RTCM Stream | Broadcast | Variable | RTK correction data |
 | `UAVCAN_EQUIPMENT_POWER_BATTERYINFO_ID` | `handle_BatteryInfo()` | Battery Info | Broadcast | 1-10 Hz | Integrated with battery system |
-| `UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID` | `handle_MagneticFieldStrength()` | Magnetic Field (legacy, no sensor_id) | Broadcast | 10-100 Hz | Integrated with compass as sensor 0; only when `USE_MAG_DRONECAN` |
-| `UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH2_ID` | `handle_MagneticFieldStrength2()` | Magnetic Field 2 | Broadcast | 10-100 Hz | Integrated with compass; only when `USE_MAG_DRONECAN` |
+| `UAVCAN_EQUIPMENT_AHRS_MAGNETICFIELDSTRENGTH_ID` | `handle_MagneticFieldStrength()` | Magnetic Field (sent by AP_Periph) | Broadcast | up to 25 Hz | Integrated with compass; only when `USE_MAG_DRONECAN` and `mag_hardware = DRONECAN` |
 | `UAVCAN_PROTOCOL_GETNODEINFO_ID` | `handle_GetNodeInfo()` | GetNodeInfo | Request/Response | On demand | Responds with FC firmware version |
 | `UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID` | `dronecanDnaHandleAllocation()` | Dynamic Node Allocation | Broadcast | On connect | Assigns node IDs to anonymous peripherals via 3-stage UID handshake |
 
@@ -326,7 +325,7 @@ dronecanBitrate_e bitrate = dronecanConfig()->bitRateKbps;
 
 ## Message Handlers
 
-The driver includes 7 built-in message handlers. Each handler decodes a message type and integrates with INAV systems.
+The driver includes 8 built-in message handlers. Each handler decodes a message type and integrates with INAV systems.
 
 ### GPS Message Handlers
 
@@ -350,24 +349,20 @@ The driver includes 7 built-in message handlers. Each handler decodes a message 
 **Receives:** `uavcan_equipment_gnss_RTCMStream`
 **Status:** Currently logs receipt only, no integration
 
+### Compass Handler
+
+Compiled only when `USE_MAG_DRONECAN` is defined (`USE_MAG` + `USE_DRONECAN`, see `target/common_post.h`). `shouldAcceptTransfer()` rejects the message unless `mag_hardware` is `DRONECAN`, so an unused compass node costs no canard pool memory and the handler is never reached.
+
+#### `handle_MagneticFieldStrength()`
+**Receives:** `uavcan_equipment_ahrs_MagneticFieldStrength` (the message AP_Periph publishes; `MagneticFieldStrength2` and `MagneticFieldStrengthHiRes` are not handled)
+**Integrates:** Calls `dronecanMagReceiveField(source_node_id, magnetic_field_ga)`
+
 ### Power & System Handlers
 
 #### `handle_BatteryInfo()`
 **Receives:** `uavcan_equipment_power_BatteryInfo`
 **Integrates:** Calls `dronecanBatterySensorReceiveInfo()` to update INAV battery system
 **Status:** Logs "Battery Info"
-
-### Compass Handlers
-
-Compiled only when `USE_MAG_DRONECAN` is defined (`USE_MAG` + `USE_DRONECAN`, see `target/common_post.h`). Both handlers return early unless `mag_hardware` is `DRONECAN`.
-
-#### `handle_MagneticFieldStrength()`
-**Receives:** `uavcan_equipment_ahrs_MagneticFieldStrength` (legacy message without `sensor_id`)
-**Integrates:** Calls `dronecanMagReceiveField(source_node_id, 0, magnetic_field_ga)`; sensor 0 is assumed, matching ArduPilot
-
-#### `handle_MagneticFieldStrength2()`
-**Receives:** `uavcan_equipment_ahrs_MagneticFieldStrength2`
-**Integrates:** Calls `dronecanMagReceiveField(source_node_id, sensor_id, magnetic_field_ga)`
 
 #### `handle_NodeStatus()`
 **Receives:** `uavcan_protocol_NodeStatus` (from other nodes)
@@ -624,14 +619,14 @@ This function is defined in battery sensor driver and updates battery voltage/cu
 
 ### Compass Integration
 
-When magnetic field messages arrive, the handlers call:
+When a magnetic field message arrives, the handler calls:
 - `dronecanMagReceiveField()` - Store the latest field sample
 
 This function lives in `drivers/compass/compass_dronecan.c`, which plugs into the regular compass driver interface (`magDev_t` init/read) and is selected by `mag_hardware = DRONECAN`. The driver:
-- converts Gauss to milligauss and clamps to `int16_t` (the same scale ArduPilot uses),
+- converts Gauss to milligauss and clamps to ±32767 (the same scale ArduPilot uses),
 - applies the `CW90_DEG_FLIP` pre-rotation that `compass_msp.c` uses, because AP_Periph publishes the same body-frame vector over CAN and over MSP,
-- locks onto the first `(node_id, sensor_id)` heard and ignores other sources until that one has been silent for 250 ms,
-- reports the read as failed (compass unhealthy) when no sample arrived for 250 ms.
+- locks onto the first node heard and ignores every other node until reboot (calibration and alignment belong to one sensor, so there is no failover),
+- reports the read as failed (compass unhealthy) when no sample arrived from the locked source for 250 ms.
 
 ### Common Integration Pattern
 
@@ -925,13 +920,13 @@ CAN bus must have 120Ω termination at each end. Without proper termination:
 **Symptoms:** `mag_hardware = DRONECAN` but the compass shows as unhealthy / mag values stay 0
 **Possible Causes:**
 - `mag_hardware` left on `AUTO` (the DroneCAN compass is never auto-detected)
-- Compass node not broadcasting `MagneticFieldStrength2` (check the node's parameters with the DroneCAN tab or dronecan_gui)
-- Another compass node on the bus took the lock first (only one source is used at a time)
+- Compass node not broadcasting `MagneticFieldStrength` (1001); `MagneticFieldStrength2` (1002) and `MagneticFieldStrengthHiRes` (sent by AP_Periph built with `AP_PERIPH_MAG_HIRES`) are not supported
+- Another compass on the bus was heard first after boot and holds the lock until reboot (only one source is used)
 
 **Debug Steps:**
 1. Verify the node appears in `status` / `MSP2_INAV_DRONECAN_NODES`
-2. Monitor CAN traffic for data type 1002 (or 1001) frames at 10 Hz or more
-3. Check `DEBUG_MAG` debug values for incoming raw samples
+2. Monitor CAN traffic for data type 1001 frames arriving more often than every 250 ms
+3. Set `debug_mode = MAG`: the debug values follow the raw samples only while they arrive from the locked node; values that stay frozen mean the 250 ms timeout has expired
 
 ---
 
@@ -1136,7 +1131,7 @@ void broadcastNodeStatus(void) {
 
 | Date | Version | Changes |
 |---|---|---|
-| 2026-11-04 | 1.5 | Added compass support: `MagneticFieldStrength`/`MagneticFieldStrength2` handlers and the `compass_dronecan.c` driver (`mag_hardware = DRONECAN`) |
+| 2026-11-04 | 1.5 | Added compass support: `MagneticFieldStrength` handler and the `compass_dronecan.c` driver (`mag_hardware = DRONECAN`) |
 | 2026-08-28 | 1.4 | Rebased onto maintenance-10.x; DNA server is now part of this branch (settings table now includes `dronecan_use_dna_server`); prior 1.3 history preserved below |
 | 2026-08-21 | 1.3 | Documented the on-demand async service client (`dronecan_async.c`): GetNodeInfo/ParamGetSet/ExecuteOpcode/RestartNode requests, the shared slot state machine, and the new `MSP2_INAV_DRONECAN_ASYNC_REQUEST`/`ASYNC_RESULT` messages that replace 0x2043's old NODE_INFO meaning. Corrected `dronecanNodeInfo_t` (name/name_len fields removed), the `MSP2_INAV_DRONECAN_NODES` reply layout (13 bytes/node, not 30; `last_seen_ms` is an elapsed delta, not an absolute timestamp), and the Settings table (real setting names are `dronecan_node_id`/`dronecan_bitrate_kbps`, not `dronecan_mode`/`dronecan_baudrate`). Scoped to the param-getset feature — this pass did not re-verify sections describing DNA server, node/battery ID filtering, or actuator control, which may have their own drift from other in-flight branches. |
 | 2026-06-06 | 1.3 | Added DNA server section; corrected settings table (`dronecan_bitrate_kbps`, `dronecan_use_dna_server`); added DNA allocation to message type table |

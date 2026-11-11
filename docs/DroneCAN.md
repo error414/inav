@@ -77,7 +77,7 @@ Both voltage and current come from the same DroneCAN BatteryInfo message, so the
 
 ### Compass via DroneCAN
 
-DroneCAN compass nodes (for example the Matek CAN-L4-3100 with an RM3100 running AP_Periph) broadcast the magnetic field with the `MagneticFieldStrength2` message. The older `MagneticFieldStrength` message is accepted as well.
+DroneCAN compass nodes (for example the Matek CAN-L4-3100 with an RM3100 running AP_Periph) broadcast the magnetic field with the `MagneticFieldStrength` message, by default at up to 25 Hz. Other magnetometer messages (`MagneticFieldStrength2`, `MagneticFieldStrengthHiRes`) are not supported.
 
 ```
 set mag_hardware = DRONECAN
@@ -86,7 +86,7 @@ save
 
 The DroneCAN compass is never auto-detected; `mag_hardware` has to be set to `DRONECAN` explicitly. The field is received in the node's body frame, in the same orientation the node would send over MSP, so a node mounted with its arrow pointing forward works with the default `align_mag`. Use `align_mag` or `align_mag_roll/pitch/yaw` for other orientations, then run the compass calibration as usual.
 
-If more than one compass node is on the bus, the first one heard is used until it stops sending for more than 250 ms; only then does the driver switch to another one. When no compass data arrives for 250 ms the compass is reported as unhealthy.
+Only one compass is used. If more than one compass node is on the bus, the first one heard after boot is used until the next reboot, and which one that is can differ from boot to boot, so keep a single DroneCAN compass on the bus. The driver never switches to another compass in flight, because calibration and alignment belong to one particular sensor. When no data arrives from the compass in use for 250 ms it is reported as unhealthy.
 
 ### Parameter Get/Set via DroneCAN
 
