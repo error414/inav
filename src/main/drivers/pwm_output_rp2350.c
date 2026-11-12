@@ -61,6 +61,7 @@
 #include "drivers/io_types.h"
 #include "drivers/pwm_mapping.h"
 #include "drivers/pwm_output.h"
+#include "drivers/time.h"
 #include "drivers/timer.h"
 
 #include "flight/mixer.h"
@@ -143,6 +144,9 @@ static uint         dshotMotorCount  = 0;
 static bool         dshotInitialized = false;
 static bool         dshotEnabled     = true;
 static uint         dshotProgramOffset;
+/* Frame spacing, same rule as pwm_output.c. 0 = not set up. */
+static timeUs_t     dshotUpdateIntervalUs = 0;
+static timeUs_t     dshotLastUpdateUs     = 0;
 
 static motorPwmProtocolTypes_e initProtocol = PWM_TYPE_STANDARD;
 static pwmInitError_e          rp2350PwmError = PWM_INIT_ERROR_NONE;
@@ -152,7 +156,7 @@ static pwmInitError_e          rp2350PwmError = PWM_INIT_ERROR_NONE;
 /*
  * Non-DShot motor protocols (Standard PWM, Oneshot125, Brushed, etc.) use
  * the same RP2350 hardware PWM peripheral as servos, on the motor GPIO pins
- * assigned from timerHardware[] (GP8–GP11 / slices 4–5 by default).
+ * assigned from timerHardware[].
  *
  * Update rate 400 Hz → period = 2.5 ms; with 1 µs/tick: wrap = 2499.
  * pwm_set_gpio_level(pin, us) writes pulse width in µs directly.
@@ -247,6 +251,17 @@ void pwmCompleteMotorUpdate(void)
     if (!dshotInitialized || !dshotEnabled || dshotMotorCount == 0) {
         return;
     }
+
+    /*
+     * Called from the scheduler's busy loop, not once per PID loop.  Without
+     * this limit the SMs are stopped and their OSR reloaded every few
+     * microseconds, in the middle of a frame, and no frame ever completes.
+     */
+    const timeUs_t currentTimeUs = micros();
+    if ((dshotUpdateIntervalUs == 0) || ((currentTimeUs - dshotLastUpdateUs) <= dshotUpdateIntervalUs)) {
+        return;
+    }
+    dshotLastUpdateUs = currentTimeUs;
 
     uint32_t motorMask = 0;
     for (uint i = 0; i < dshotMotorCount; i++) {
@@ -371,7 +386,8 @@ void pwmRestoreMotorPin(int motorIndex)
  *
  * ioTag_t encoding: ((gpioid + 1) << 4) | pin
  *   gpioid 0 → Port A (GPIO 0–15)
- *   gpioid 1 → Port B (GPIO 16–29)
+ *   gpioid 1 → Port B (GPIO 16–31)
+ *   gpioid 2 → Port C (GPIO 32–47, RP2350B only)
  *
  * So GPIO number = gpioid * 16 + pin
  *   PA8  (GPIO 8)  → gpioid=0, pin=8  → 0*16+8  = 8
@@ -423,7 +439,8 @@ bool pwmMotorAndServoInit(void)
     if (dshot) {
         /*
          * RP2350 PIO GPIO base: the only legal values are 0 (GP0–GP31) or 16
-         * (GP16–GP47).  RP2350 has GPIOs 0–29 so base=0 always covers all pins.
+         * (GP16–GP47).  Base 0 covers every pin of an RP2350A; on an RP2350B
+         * motor pins must be below GP32 (pio_sm_init() fails otherwise).
          */
         if (pio_set_gpio_base(pio0, 0u) != PICO_OK) {
             rp2350PwmError = PWM_INIT_ERROR_TIMER_INIT_FAILED;
@@ -452,6 +469,7 @@ bool pwmMotorAndServoInit(void)
         }
         float clocks_per_us = (float)clock_get_hz(clk_sys) / 1000000.0f;
         dshotClkdiv = (bitPeriodUs / (float)DSHOT_BIT_PERIOD) * clocks_per_us;
+        dshotUpdateIntervalUs = 1000000u / getEscUpdateFrequency();
     }
 
     /* ── Shared hardware-PWM clock divider (1 µs/tick) ───────────────── */

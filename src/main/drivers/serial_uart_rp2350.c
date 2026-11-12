@@ -382,6 +382,30 @@ void uartGetPortPins(UARTDevice_e device, serialPortPins_t *pins)
     }
 }
 
+// UART dispatch — hardware UARTs 1-2 via RP2350 PL011, PIO UARTs 3-4 via PIO1
+serialPort_t *uartOpen(USART_TypeDef *USARTx, serialReceiveCallbackPtr rxCallback,
+                        void *rxCallbackData, uint32_t baudRate,
+                        portMode_t mode, portOptions_t options)
+{
+    uartPort_t *s = NULL;
+#ifdef USE_UART1
+    if (USARTx == USART1) { s = serialUART1(baudRate, mode, options); }
+#endif
+#ifdef USE_UART2
+    if (USARTx == USART2) { s = serialUART2(baudRate, mode, options); }
+#endif
+#ifdef USE_UART3
+    if (USARTx == USART3) { s = serialUART3(baudRate, mode, options); }
+#endif
+#ifdef USE_UART4
+    if (USARTx == USART4) { s = serialUART4(baudRate, mode, options); }
+#endif
+    if (!s) { return NULL; }
+    s->port.rxCallback     = rxCallback;
+    s->port.rxCallbackData = rxCallbackData;
+    return (serialPort_t *)s;
+}
+
 void uartClearIdleFlag(uartPort_t *s)
 {
     /* PL011 UART clears the idle flag automatically — nothing to do */
