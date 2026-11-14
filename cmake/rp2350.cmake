@@ -51,6 +51,12 @@ main_sources(RP2350_SRC
     drivers/bus_i2c_rp2350.c
     drivers/bus_spi_rp2350.c
     drivers/persistent_rp2350.c
+    # SD card over SPI and its FAT filesystem, compiled in only with USE_SDCARD
+    drivers/sdcard/sdcard.c
+    drivers/sdcard/sdcard_spi.c
+    drivers/sdcard/sdcard_standard.c
+    io/asyncfatfs/asyncfatfs.c
+    io/asyncfatfs/fat_standard.c
 )
 
 # --- Pico SDK sources ---

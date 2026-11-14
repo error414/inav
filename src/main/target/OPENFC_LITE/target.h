@@ -34,7 +34,6 @@
  * Wired but not used by INAV:
  *   GPIO4/5/6    analog OSD (OSD_W, OSD_EN, OSD_SYNC), no driver
  *   GPIO15       IMU CLKIN, only wired through for TDK parts
- *   GPIO42..44   SPI1 SCK/MOSI/MISO, GPIO46 CS: microSD, not enabled yet
  */
 
 #define TARGET_BOARD_IDENTIFIER "OPFC"
@@ -77,6 +76,20 @@
 #define IMU_ICM45686_ALIGN      CW0_DEG
 #define ICM45686_SPI_BUS        BUS_SPI1
 #define ICM45686_CS_PIN         PA14    // GPIO14
+
+// *************** microSD on SPI2 (RP2350 spi1) ***************
+// The socket has no card detect switch
+#define USE_SPI_DEVICE_2
+#define SPI2_SCK_PIN            PC10    // GPIO42
+#define SPI2_MOSI_PIN           PC11    // GPIO43
+#define SPI2_MISO_PIN           PC12    // GPIO44
+
+#define USE_SDCARD
+#define USE_SDCARD_SPI
+#define SDCARD_SPI_BUS          BUS_SPI2
+#define SDCARD_CS_PIN           PC14    // GPIO46
+
+#define ENABLE_BLACKBOX_LOGGING_ON_SDCARD_BY_DEFAULT
 
 // *************** I2C1 (RP2350 i2c0), pads for baro / mag ***************
 #define USE_I2C
@@ -156,7 +169,7 @@
 #define USE_OSD
 #define USE_MSP_OSD
 
-#define DEFAULT_FEATURES            (FEATURE_OSD | FEATURE_VBAT | FEATURE_CURRENT_METER | FEATURE_TELEMETRY | FEATURE_TX_PROF_SEL)
+#define DEFAULT_FEATURES            (FEATURE_OSD | FEATURE_VBAT | FEATURE_CURRENT_METER | FEATURE_TELEMETRY | FEATURE_TX_PROF_SEL | FEATURE_BLACKBOX)
 
 // *************** Not available on the RP2350 platform ***************
 // No driver for the OLED, PPM/PWM receivers, camera control, the 4-way interface

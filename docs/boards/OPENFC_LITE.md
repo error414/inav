@@ -17,7 +17,8 @@ INAV target: `OPENFC_LITE`
 * 10 V rail for the VTX, switchable
 * Beeper pad, status LED, LED strip pad
 * ADC: battery voltage, current signal from the ESC connector, RSSI, one spare pad
-* microSD socket and analog OSD: not supported by INAV yet, see below
+* microSD socket (SPI) for the blackbox
+* Analog OSD: not supported by INAV yet, see below
 
 ## Pinout
 
@@ -42,7 +43,8 @@ INAV target: `OPENFC_LITE`
 | 41 | PC9 | ADC: battery voltage |
 | 45 | PC13 | ADC: RSSI |
 | 47 | PC15 | ADC: spare pad |
-| 42, 43, 44, 46 | | microSD, not used |
+| 42 / 43 / 44 | PC10 / PC11 / PC12 | microSD SPI SCK / MOSI / MISO |
+| 46 | PC14 | microSD chip select |
 
 ## Serial ports
 
@@ -64,11 +66,11 @@ not available. Inverted signals (SBUS) need no external inverter.
 * Battery voltage scale 1100 (100k / 10k divider)
 * Current scale 100 (10 mV/A, OpenESC 30x30). Change `current_meter_scale` for another ESC
 * The 10 V VTX rail is on after boot. The `USER1` mode switches it **off**
+* Blackbox is enabled and logs to the microSD card (`blackbox_device = SDCARD`)
 
 ## Not supported yet
 
 * Analog OSD (GPIO 4, 5, 6)
-* microSD blackbox
 * Bidirectional DSHOT, use the ESC telemetry wire instead
 * ESC passthrough (BLHeli 4-way interface)
 * Dynamic gyro notch, gyro Kalman and adaptive filter

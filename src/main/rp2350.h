@@ -44,6 +44,13 @@
 
 extern uint32_t SystemCoreClock;
 
+/* CMSIS name used by shared drivers (sdcard_spi.c). Spelled as in cmsis_gcc.h,
+ * which arm_math.h pulls in for some files, so that it is not a redefinition. */
+#ifndef __ASM
+#define __ASM       __asm
+#endif
+#define __NOP()     __ASM volatile ("nop")
+
 /* ── Timer ─────────────────────────────────────────────────────────────────── */
 
 typedef struct { void* dummy; } TIM_TypeDef;
