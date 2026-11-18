@@ -170,8 +170,11 @@ void pgResetFn_geoZoneVertices(vertexConfig_t *instance)
 uint8_t geozoneGetUsedVerticesCount(void)
 {
     uint8_t count = 0;
-    for (uint8_t i = 0; i < MAX_GEOZONES_IN_CONFIG; i++) {
-        count += geoZonesConfig(i)->vertexCount;
+    // Count occupied slots, the vertexCount declared by the zones can add up to more than the table holds
+    for (uint8_t i = 0; i < MAX_VERTICES_IN_CONFIG; i++) {
+        if (geoZoneVertices(i)->zoneId >= 0) {
+            count++;
+        }
     }
     return count;
 }
@@ -237,8 +240,19 @@ void geozoneResetVertices(const int8_t zoneId, const int16_t idx)
                 break;
             }
         }
-        if (found) {
-            geoZonesConfigMutable(zoneId)->vertexCount--; 
+        // a vertex can exist in a zone that declares none, don't wrap the count below zero
+        if (found && geoZonesConfig(zoneId)->vertexCount > 0) {
+            geoZonesConfigMutable(zoneId)->vertexCount--;
+        }
+
+        // Close the gap, geoZoneInit() rejects a zone whose vertex indices aren't contiguous.
+        // A circle is left alone: its two vertices are centre and radius, shifting would turn the radius into the centre.
+        if (found && geoZonesConfig(zoneId)->shape == GEOZONE_SHAPE_POLYGON) {
+            for (uint8_t i = 0; i < MAX_VERTICES_IN_CONFIG; i++) {
+                if (geoZoneVertices(i)->zoneId == zoneId && geoZoneVertices(i)->idx > idx) {
+                    geoZoneVerticesMutable(i)->idx--;
+                }
+            }
         }
     }
 }
